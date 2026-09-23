@@ -1,10 +1,20 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx, os
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI(title="API Gateway")
+
+# CORS: permite que el frontend (web-frontend) consuma la API desde otro origen
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 FLEET_SERVICE_URL = os.getenv("FLEET_SERVICE_URL")
 SHIPMENT_SERVICE_URL = os.getenv("SHIPMENT_SERVICE_URL")
