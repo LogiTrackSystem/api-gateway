@@ -28,6 +28,8 @@ async def get_vehicles():
 async def get_vehicle(vehicle_id: str):
     async with httpx.AsyncClient() as client:
         resp = await client.get(f"{FLEET_SERVICE_URL}/vehiculos/{vehicle_id}")
+        print(f"DEBUG -> URL llamada: {FLEET_SERVICE_URL}/vehiculos/{vehicle_id}")
+        print(f"DEBUG -> status de Fleet: {resp.status_code}, body: {resp.text}")
         if resp.status_code == 404:
             raise HTTPException(status_code=404, detail="Vehículo no encontrado")
         return resp.json()
