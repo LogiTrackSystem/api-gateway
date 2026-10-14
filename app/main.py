@@ -129,20 +129,14 @@ async def get_shipment_events(envio_id: str):
 
 @app.patch("/api/v1/envios/{envio_id}/asignar")
 async def assign_shipment(envio_id: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(f"{SHIPMENT_SERVICE_URL}/envios/{envio_id}/asignar", json=payload)
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="Envío no encontrado")
-        return resp.json()
+    # _proxy propaga el status real (200/404/422/...) del shipment-service.
+    return await _proxy("PATCH", f"{SHIPMENT_SERVICE_URL}/envios/{envio_id}/asignar", json_body=payload)
 
 
 @app.patch("/api/v1/envios/{envio_id}/estado")
 async def update_shipment_status(envio_id: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(f"{SHIPMENT_SERVICE_URL}/envios/{envio_id}/estado", json=payload)
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="Envío no encontrado")
-        return resp.json()
+    # _proxy propaga el status real (200/404/422/...) del shipment-service.
+    return await _proxy("PATCH", f"{SHIPMENT_SERVICE_URL}/envios/{envio_id}/estado", json_body=payload)
 
 
 @app.post("/api/v1/envios/{envio_id}/prueba-entrega", status_code=201)
