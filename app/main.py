@@ -275,6 +275,11 @@ async def listar_facturas(cliente_id: str | None = None, periodo: str | None = N
     return resp.json()
 
 
+@app.get("/api/v1/facturas/{factura_id}")
+async def obtener_factura(factura_id: str):
+    return await _proxy("GET", f"{BILLING_SERVICE_URL}/facturas/{factura_id}")
+
+
 @app.post("/api/v1/facturas/cerrar-periodo")
 async def cerrar_periodo_facturacion():
     return await _proxy("POST", f"{BILLING_SERVICE_URL}/facturas/cerrar-periodo")
