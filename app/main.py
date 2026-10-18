@@ -4,6 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import httpx
+from .interno import cabeceras_internas
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -18,6 +19,7 @@ from .proxy import reenviar
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.http = httpx.AsyncClient(
+        headers=cabeceras_internas(),
         timeout=httpx.Timeout(TIMEOUT_LECTURA_S, connect=3.0, write=10.0, pool=5.0),
         follow_redirects=True,
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
