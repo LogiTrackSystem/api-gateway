@@ -80,6 +80,7 @@ async def construir(cliente: httpx.AsyncClient) -> dict:
         }},
         f"{PREFIJO_API}/estado": {"get": {
             "tags": ["gateway"], "summary": "Estado de todos los microservicios",
+            "description": "Solo administrador.",
             "responses": {"200": {"description": "Estado de cada servicio"}},
         }},
     }
@@ -95,7 +96,9 @@ async def construir(cliente: httpx.AsyncClient) -> dict:
 
     descripcion = (
         "Punto de entrada único de LogiTrack. Todas las rutas cuelgan de `/api/v1`. "
-        "Los errores siguen el formato `{\"detail\": {\"codigo\": ..., \"mensaje\": ...}}`."
+        "Los errores siguen el formato `{\"detail\": {\"codigo\": ..., \"mensaje\": ...}}`. "
+        "Inicie sesión con `POST /api/v1/auth/login` y envíe `Authorization: Bearer <token>` en las demás llamadas "
+        "(401 sin sesión o con token vencido, 403 si su rol no tiene permiso)."
     )
     if caidos:
         descripcion += (
@@ -107,8 +110,16 @@ async def construir(cliente: httpx.AsyncClient) -> dict:
         "openapi": "3.1.0",
         "info": {"title": "LogiTrack API Gateway", "version": "1.0.0", "description": descripcion},
         "paths": paths,
-        "components": {"schemas": schemas},
+        "components": {
+            "schemas": schemas,
+            "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+        },
+        # Todo requiere Bearer salvo el inicio de sesión (que se declara sin seguridad)
+        "security": [{"bearerAuth": []}],
     }
+    login = paths.get(f"{PREFIJO_API}/auth/login", {}).get("post")
+    if login is not None:
+        login["security"] = []
     _cache["momento"] = ahora
     _cache["spec"] = spec_final
     return spec_final

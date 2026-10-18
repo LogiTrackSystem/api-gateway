@@ -57,6 +57,8 @@ def _r(prefijo: str, servicio: str, metodos: str, destino: str | None = None) ->
 # Superficie pública de la API. Lo que no aparece aquí (por ejemplo POST /reservas de Fleet o
 # POST /telemetria de Tracking, que son de uso interno) no se puede alcanzar desde afuera.
 RUTAS = [
+    _r("auth", "shipment", "GET,POST"),
+    _r("usuarios", "shipment", "GET,POST,PATCH"),
     _r("vehiculos", "fleet", "GET,POST,PATCH"),
     _r("conductores", "fleet", "GET,POST,PATCH,PUT"),
     _r("viabilidad", "fleet", "POST", destino="/reservas/viabilidad"),  # antes que "reservas": es más específica
@@ -76,6 +78,9 @@ RUTAS = [
     _r("notificaciones", "notification", "GET"),
     _r("preferencias", "notification", "GET,POST"),
     _r("facturas", "billing", "GET,POST"),
+    _r("facturas-pedido", "billing", "GET"),
+    _r("cotizaciones", "billing", "GET"),
+    _r("pagos", "billing", "GET,POST"),
     _r("costos-ruta", "billing", "GET"),
     _r("tarifas", "billing", "GET,POST"),
     _r("dashboard", "analytics", "GET"),

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from . import openapi_unificado
 from .config import SERVICIOS, TIMEOUT_LECTURA_S, origenes_cors
+from .permisos import ErrorAcceso, autorizar
 from .proxy import reenviar
 
 
@@ -68,7 +69,11 @@ async def _salud(cliente: httpx.AsyncClient, servicio: str, base: str | None):
 
 @app.get("/api/v1/estado")
 async def estado_de_servicios(request: Request):
-    """Consulta la salud de cada microservicio (útil para el panel del frontend y para las demos)."""
+    """Consulta la salud de cada microservicio (útil para el panel del frontend y para las demos). Solo administrador."""
+    try:
+        autorizar("GET", "/estado", request.headers.get("authorization"))
+    except ErrorAcceso as exc:
+        return JSONResponse(status_code=exc.status, content={"detail": {"codigo": exc.codigo, "mensaje": exc.mensaje}})
     resultados = await asyncio.gather(*[_salud(request.app.state.http, s, u) for s, u in SERVICIOS.items()])
     servicios = dict(resultados)
     ok = all(v["estado"] == "ok" for v in servicios.values())

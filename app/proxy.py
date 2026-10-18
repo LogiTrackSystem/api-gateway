@@ -5,8 +5,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from .config import RUTAS, SERVICIOS
+from .permisos import CABECERAS_IDENTIDAD, ErrorAcceso, autorizar, cabeceras_identidad
 
-CABECERAS_REENVIADAS = {"content-type", "accept", "accept-language", "authorization"}
+# El token NO se reenvía: los servicios reciben la identidad ya verificada en X-User-*.
+CABECERAS_REENVIADAS = {"content-type", "accept", "accept-language"}
 
 
 def resolver(ruta: str):
@@ -28,12 +30,23 @@ def _error(status: int, codigo: str, mensaje: str, rid: str, servicio: str | Non
 
 async def reenviar(request: Request, ruta: str, cliente: httpx.AsyncClient, rid: str) -> Response:
     inicio = time.perf_counter()
+    # Se consume el cuerpo ANTES de decidir: si se responde 401/403/404 sin leerlo, el servidor cierra la
+    # conexión con datos pendientes y algunos clientes (p. ej. en Windows) reciben un reinicio de conexión
+    # en lugar de la respuesta.
+    cuerpo = await request.body()
     regla, resto = resolver(ruta)
     if regla is None:
         return _error(404, "RUTA_NO_ENCONTRADA", f"No existe la ruta /api/v1{ruta}", rid)
     if request.method.upper() not in regla.metodos:
         permitidos = ", ".join(sorted(regla.metodos))
         return _error(405, "METODO_NO_PERMITIDO", f"/api/v1/{regla.prefijo} solo admite: {permitidos}", rid)
+
+    try:
+        permiso, ident = autorizar(request.method, ruta, request.headers.get("authorization"))
+    except ErrorAcceso as exc:
+        return _error(exc.status, exc.codigo, exc.mensaje, rid)
+    if permiso is None:  # existe el prefijo y el método pero ninguna regla de permisos: se deniega
+        return _error(403, "SIN_PERMISO", f"La ruta /api/v1{ruta} no está habilitada para ningún rol", rid)
 
     base = SERVICIOS.get(regla.servicio)
     if not base:
@@ -44,15 +57,22 @@ async def reenviar(request: Request, ruta: str, cliente: httpx.AsyncClient, rid:
 
     resto = resto.rstrip("/")
     destino = regla.destino + (resto if resto else "/")  # las colecciones de los servicios terminan en '/'
-    cuerpo = await request.body()
     cabeceras = {k: v for k, v in request.headers.items() if k.lower() in CABECERAS_REENVIADAS}
     cabeceras["x-request-id"] = rid
+    # Se descarta toda identidad enviada desde afuera y se inyecta la verificada del token
+    for k in CABECERAS_IDENTIDAD:
+        cabeceras.pop(k, None)
+    cabeceras.update(cabeceras_identidad(ident))
+
+    params = list(request.query_params.multi_items())
+    if ident is not None and ident.rol == "cliente" and permiso.forzar_query_cliente:
+        params = [(k, v) for k, v in params if k != "cliente_id"] + [("cliente_id", str(ident.cliente_id))]
 
     try:
         resp = await cliente.request(
             request.method,
             base + destino,
-            params=list(request.query_params.multi_items()),
+            params=params,
             content=cuerpo or None,
             headers=cabeceras,
         )
