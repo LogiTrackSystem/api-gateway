@@ -25,7 +25,8 @@ async def lifespan(app: FastAPI):
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
     # Despierta los microservicios en segundo plano: el gateway ya atiende peticiones mientras tanto.
-    app.state.warmup = calentamiento.iniciar()
+    app.state.warmup_estado = {}
+    app.state.warmup = calentamiento.iniciar(estado=app.state.warmup_estado)
     yield
     await calentamiento.detener(app.state.warmup)
     await app.state.http.aclose()
@@ -46,8 +47,11 @@ app.add_middleware(
 
 
 @app.get("/health", include_in_schema=False)
-def health():
-    return {"status": "ok", "service": "api-gateway"}
+def health(request: Request):
+    # "calentamiento" dice cuántos microservicios ya despertaron (útil para saber cuándo el sistema está listo)
+    activo = getattr(request.app.state, "warmup", None) is not None
+    estado = getattr(request.app.state, "warmup_estado", None)
+    return {"status": "ok", "service": "api-gateway", "calentamiento": calentamiento.resumen(estado, activo)}
 
 
 @app.get("/openapi.json", include_in_schema=False)

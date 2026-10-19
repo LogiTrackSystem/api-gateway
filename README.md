@@ -20,18 +20,25 @@ FastAPI + httpx.
 > Nota: autenticación JWT todavía no está cableada en estas rutas — pendiente de diseño (ver decisión de arquitectura de auth).
 
 ## Calentamiento de microservicios (Render)
-En Render gratis cada servicio se duerme tras ~15 min sin peticiones y tarda hasta ~1 min en despertar. Para
+En Render gratis cada servicio se duerme tras ~15 min sin peticiones y tarda hasta ~2 min en despertar. Para
 acortar ese problema, al arrancar el gateway lanza una tarea en segundo plano (`app/calentamiento.py`) que hace
 `GET /health` a todos los servicios configurados (`*_SERVICE_URL`) en paralelo, con reintentos y la clave interna
-(`X-Internal-Key`). No retrasa el arranque: el gateway responde desde el primer momento.
+(`X-Internal-Key`). **No se rinde**: por defecto reintenta cada servicio, sin límite, hasta que responde
+(un 200 JSON, o un 4xx que indica que ya está despierto; los 5xx y los timeouts se reintentan). No retrasa el
+arranque: el gateway responde desde el primer momento.
 
 | Variable | Por defecto | Qué hace |
 |---|---|---|
 | `WARMUP_ACTIVO` | `true` | `false` lo desactiva |
-| `WARMUP_INTENTOS` | `5` | Intentos por servicio |
-| `WARMUP_PAUSA_S` | `4` | Segundos entre intentos |
-| `WARMUP_TIMEOUT_S` | `15` | Espera máxima de cada intento |
+| `WARMUP_INTENTOS` | `0` | Intentos por servicio. `0` = sin límite: reintenta hasta que el servicio responda |
+| `WARMUP_PAUSA_S` | `5` | Segundos entre intentos (mínimo 1 si los intentos no tienen límite) |
+| `WARMUP_TIMEOUT_S` | `30` | Espera máxima de cada intento |
 | `WARMUP_INTERVALO_MIN` | `0` | `0` = solo al arrancar; `N` = repetir cada N minutos mientras el gateway esté despierto |
 | `WARMUP_SERVICIOS` | vacío | Nombres separados por coma para calentar solo algunos (`fleet,billing`) |
 
 Los resultados se ven en los logs: `[INFO] Enviando ping de calentamiento a ...`, `[SUCCESS] Servicio ... activo`.
+El avance también se consulta en `GET /health`, campo `calentamiento`: `{"estado": "en_curso", "activos": 7, "total": 9}`
+(`estado`: `en_curso`, `completo`, `incompleto` o `desactivado`). Cuando dice `completo`, el sistema ya está listo.
+
+Limitaciones del plan gratis: si el propio gateway se duerme, la tarea se reinicia al despertarlo; y mantener los
+10 servicios despiertos consume las 750 horas/mes del workspace, por eso el calentamiento ocurre solo al arrancar.

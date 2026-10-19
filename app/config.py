@@ -38,9 +38,9 @@ def _booleano(nombre: str, defecto: bool) -> bool:
 @dataclass(frozen=True)
 class ConfigCalentamiento:
     activo: bool            # WARMUP_ACTIVO (por defecto sí)
-    intentos: int           # WARMUP_INTENTOS: intentos por servicio (mínimo 1)
-    pausa_s: float          # WARMUP_PAUSA_S: pausa entre intentos
-    timeout_s: float        # WARMUP_TIMEOUT_S: espera máxima de cada intento (un servicio dormido tarda en responder)
+    intentos: int           # WARMUP_INTENTOS: intentos por servicio; 0 = sin límite (hasta que responda)
+    pausa_s: float          # WARMUP_PAUSA_S: pausa entre intentos (mínimo 1 s si los intentos no tienen límite)
+    timeout_s: float        # WARMUP_TIMEOUT_S: espera máxima de cada intento (un servicio dormido puede tardar ~2 min en responder)
     intervalo_min: float    # WARMUP_INTERVALO_MIN: 0 = solo al arrancar; >0 = repetir cada N minutos mientras el gateway esté despierto
     solo: frozenset[str]    # WARMUP_SERVICIOS: nombres separados por coma (vacío = todos los configurados)
 
@@ -48,11 +48,15 @@ class ConfigCalentamiento:
 def config_calentamiento() -> ConfigCalentamiento:
     """Lee la configuración en el momento de la llamada (así las pruebas pueden cambiar el entorno)."""
     solo = frozenset(n.strip().lower() for n in os.getenv("WARMUP_SERVICIOS", "").split(",") if n.strip())
+    intentos = _entero("WARMUP_INTENTOS", 0, minimo=0)
+    pausa_s = _decimal("WARMUP_PAUSA_S", 5.0)
+    if intentos == 0:
+        pausa_s = max(pausa_s, 1.0)  # sin límite de intentos: nunca girar en vacío contra un servicio caído
     return ConfigCalentamiento(
         activo=_booleano("WARMUP_ACTIVO", True),
-        intentos=_entero("WARMUP_INTENTOS", 5, minimo=1),
-        pausa_s=_decimal("WARMUP_PAUSA_S", 4.0),
-        timeout_s=_decimal("WARMUP_TIMEOUT_S", 15.0, minimo=1.0),
+        intentos=intentos,
+        pausa_s=pausa_s,
+        timeout_s=_decimal("WARMUP_TIMEOUT_S", 30.0, minimo=1.0),
         intervalo_min=_decimal("WARMUP_INTERVALO_MIN", 0.0),
         solo=solo,
     )
