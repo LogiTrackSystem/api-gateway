@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 
-from . import openapi_unificado
+from . import calentamiento, openapi_unificado
 from .config import SERVICIOS, TIMEOUT_LECTURA_S, origenes_cors
 from .permisos import ErrorAcceso, autorizar
 from .proxy import reenviar
@@ -24,7 +24,10 @@ async def lifespan(app: FastAPI):
         follow_redirects=True,
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
+    # Despierta los microservicios en segundo plano: el gateway ya atiende peticiones mientras tanto.
+    app.state.warmup = calentamiento.iniciar()
     yield
+    await calentamiento.detener(app.state.warmup)
     await app.state.http.aclose()
 
 

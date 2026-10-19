@@ -9,6 +9,63 @@ PREFIJO_API = "/api/v1"
 TIMEOUT_LECTURA_S = float(os.getenv("GATEWAY_TIMEOUT_S", "65"))  # crear un envío puede esperar a OSRM
 CACHE_OPENAPI_S = 20
 
+
+# ---------- Calentamiento ("warm-up") de los microservicios ----------
+# En Render gratis cada servicio se duerme tras ~15 min sin tráfico. Al arrancar, el gateway les manda un
+# ping a /health en segundo plano para que vayan despertando (ver calentamiento.py). Todo es configurable
+# por variables de entorno; las URLs salen de SERVICIOS (las mismas *_SERVICE_URL que usa el proxy).
+def _entero(nombre: str, defecto: int, minimo: int = 0) -> int:
+    try:
+        return max(minimo, int(os.getenv(nombre, str(defecto))))
+    except ValueError:
+        return defecto
+
+
+def _decimal(nombre: str, defecto: float, minimo: float = 0.0) -> float:
+    try:
+        return max(minimo, float(os.getenv(nombre, str(defecto))))
+    except ValueError:
+        return defecto
+
+
+def _booleano(nombre: str, defecto: bool) -> bool:
+    valor = os.getenv(nombre)
+    if valor is None:
+        return defecto
+    return valor.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+@dataclass(frozen=True)
+class ConfigCalentamiento:
+    activo: bool            # WARMUP_ACTIVO (por defecto sí)
+    intentos: int           # WARMUP_INTENTOS: intentos por servicio (mínimo 1)
+    pausa_s: float          # WARMUP_PAUSA_S: pausa entre intentos
+    timeout_s: float        # WARMUP_TIMEOUT_S: espera máxima de cada intento (un servicio dormido tarda en responder)
+    intervalo_min: float    # WARMUP_INTERVALO_MIN: 0 = solo al arrancar; >0 = repetir cada N minutos mientras el gateway esté despierto
+    solo: frozenset[str]    # WARMUP_SERVICIOS: nombres separados por coma (vacío = todos los configurados)
+
+
+def config_calentamiento() -> ConfigCalentamiento:
+    """Lee la configuración en el momento de la llamada (así las pruebas pueden cambiar el entorno)."""
+    solo = frozenset(n.strip().lower() for n in os.getenv("WARMUP_SERVICIOS", "").split(",") if n.strip())
+    return ConfigCalentamiento(
+        activo=_booleano("WARMUP_ACTIVO", True),
+        intentos=_entero("WARMUP_INTENTOS", 5, minimo=1),
+        pausa_s=_decimal("WARMUP_PAUSA_S", 4.0),
+        timeout_s=_decimal("WARMUP_TIMEOUT_S", 15.0, minimo=1.0),
+        intervalo_min=_decimal("WARMUP_INTERVALO_MIN", 0.0),
+        solo=solo,
+    )
+
+
+def urls_de_salud(servicios: dict[str, str | None], solo: frozenset[str] = frozenset()) -> dict[str, str]:
+    """{nombre: URL de /health} de los servicios configurados (y, si se pide, solo de los indicados)."""
+    return {
+        nombre: f"{base}/health"
+        for nombre, base in servicios.items()
+        if base and (not solo or nombre in solo)
+    }
+
 # Orígenes del frontend autorizados a llamar al gateway (lista separada por comas).
 # Si la variable no existe se usan los puertos habituales de desarrollo; "*" abre el acceso a todos.
 CORS_POR_DEFECTO = "http://localhost:5173,http://localhost:3000,http://localhost:4200"
