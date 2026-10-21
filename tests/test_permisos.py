@@ -68,6 +68,19 @@ def test_login_es_publico_y_llega_a_shipment(gw):
     assert str(recibidas[0].url) == "http://shipment.test/auth/login"
 
 
+def test_registro_es_publico_y_llega_a_shipment_sin_identidad_falsa(gw):
+    cuerpo = {"nombre": "Ana", "email": "a@x.co", "password": "12345678", "tipo_documento": "CC", "numero_documento": "123"}
+    r = gw.post("/api/v1/auth/registro", json=cuerpo, headers={"X-User-Rol": "administrador", "X-User-Id": "falso"})
+    assert r.status_code == 200
+    assert str(recibidas[0].url) == "http://shipment.test/auth/registro"
+    assert "x-user-rol" not in recibidas[0].headers and "x-user-id" not in recibidas[0].headers
+
+
+def test_registro_solo_acepta_post(gw):
+    assert gw.get("/api/v1/auth/registro").status_code in (401, 403, 405)
+    assert recibidas == []
+
+
 def test_ruta_inexistente_sigue_siendo_404_y_metodo_no_permitido_405(gw):
     assert gw.get("/api/v1/nada").status_code == 404
     assert gw.delete("/api/v1/envios/1", headers=auth("administrador")).status_code == 405

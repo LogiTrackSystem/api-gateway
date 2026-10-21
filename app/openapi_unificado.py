@@ -114,12 +114,13 @@ async def construir(cliente: httpx.AsyncClient) -> dict:
             "schemas": schemas,
             "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
         },
-        # Todo requiere Bearer salvo el inicio de sesión (que se declara sin seguridad)
+        # Todo requiere Bearer salvo el inicio de sesión y el registro (que se declaran sin seguridad)
         "security": [{"bearerAuth": []}],
     }
-    login = paths.get(f"{PREFIJO_API}/auth/login", {}).get("post")
-    if login is not None:
-        login["security"] = []
+    for ruta_publica in ("login", "registro"):
+        publica = paths.get(f"{PREFIJO_API}/auth/{ruta_publica}", {}).get("post")
+        if publica is not None:
+            publica["security"] = []
     _cache["momento"] = ahora
     _cache["spec"] = spec_final
     return spec_final

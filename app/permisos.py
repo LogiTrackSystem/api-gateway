@@ -53,6 +53,7 @@ ID = r"[^/]+"
 REGLAS = [
     # --- Identidad ---
     _p("POST", r"/auth/login", None),
+    _p("POST", r"/auth/registro", None),   # alta pública: clientes libres; operador/gestor exigen el código del administrador (lo valida Shipment)
     _p("GET", r"/auth/me", TODOS),
     _p("GET,POST,PATCH", rf"/usuarios(/{ID})?", {A}),
     # --- Clientes y ubicaciones ---
