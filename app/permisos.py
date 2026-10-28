@@ -41,13 +41,14 @@ class Regla:
 def _p(metodos: str, patron: str, roles, **extra) -> Regla:
     return Regla(
         metodos=frozenset(m.strip().upper() for m in metodos.split(",")),
-        patron=re.compile("^" + patron + "$"),
+        patron=re.compile("^" + patron + r"\Z"),   # \Z (no $): $ aceptaría un salto de línea final
         roles=None if roles is None else frozenset(roles),
         **extra,
     )
 
 
 ID = r"[^/]+"
+UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 
 # Rutas tal como las ve el frontend, después de /api/v1 y sin barra final.
 REGLAS = [
@@ -88,7 +89,11 @@ REGLAS = [
     _p("PATCH", r"/rutas(/.*)?", PERSONAL),
     _p("GET", r"/(programas|intervenciones)(/.*)?", PERSONAL),
     _p("POST", r"/(programas|intervenciones)(/.*)?", {G, A}),
-    # --- Seguimiento (nunca para el cliente) ---
+    # --- Seguimiento ---
+    # El cliente SOLO puede seguir un envío por su UUID (Tracking comprueba además que sea suyo, con la identidad que
+    # inyecta este gateway). Va antes de la regla del personal: esa ruta es solo de clientes y el resto de /seguimiento,
+    # /telemetria y /simulaciones sigue siendo del personal (flota global, vehículos, telemetría).
+    _p("GET", rf"/seguimiento/cliente/envio/{UUID_RE}(/(trazado|recorrido))?", {C}),
     _p("GET", r"/(seguimiento|simulaciones|telemetria)(/.*)?", PERSONAL),
     # --- Aduanas ---
     _p("GET,PATCH", r"/declaraciones(/.*)?", {O, A}),

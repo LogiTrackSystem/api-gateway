@@ -17,6 +17,8 @@ FastAPI + httpx.
 - `GET /api/v1/conductores`, `POST /api/v1/conductores`
 - `POST /api/v1/envios`, `GET /api/v1/envios`, `GET /api/v1/envios/{id}`, `GET /api/v1/envios/{id}/eventos`, `PATCH /api/v1/envios/{id}/asignar`, `PATCH /api/v1/envios/{id}/estado`, `POST /api/v1/envios/{id}/prueba-entrega`
 
+- `GET /api/v1/seguimiento/cliente/envio/{id}` (+ `/trazado`, `/recorrido`) — **solo rol cliente**: seguimiento de SU envío. Tracking valida el dueño con la identidad que inyecta el gateway. El resto de `/seguimiento`, `/telemetria` y `/simulaciones` es solo del personal (operador, gestor de flota, administrador) y los clientes lo reciben como 403.
+
 > Nota: autenticación JWT todavía no está cableada en estas rutas — pendiente de diseño (ver decisión de arquitectura de auth).
 
 ## Calentamiento y health checks periódicos de los microservicios (Render)

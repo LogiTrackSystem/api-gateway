@@ -218,3 +218,95 @@ def test_openapi_declara_bearer(gw):
     spec = r.json()
     assert spec["components"]["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
     assert spec["security"] == [{"bearerAuth": []}]
+
+
+# ---------- seguimiento en tiempo real para el cliente ----------
+
+ENVIO = "33333333-3333-3333-3333-333333333333"
+RUTAS_CLIENTE = [f"/seguimiento/cliente/envio/{ENVIO}", f"/seguimiento/cliente/envio/{ENVIO}/trazado",
+                 f"/seguimiento/cliente/envio/{ENVIO}/recorrido"]
+
+
+@pytest.mark.parametrize("ruta", RUTAS_CLIENTE)
+def test_el_cliente_sigue_su_envio_por_el_gateway_con_su_identidad(gw, ruta):
+    h = {**auth("cliente"), "X-User-Rol": "administrador", "X-Cliente-Id": CLIENTE_B}     # identidad falsa desde afuera
+    r = gw.get(f"/api/v1{ruta}?cliente_id={CLIENTE_B}&limite=50", headers=h)
+    assert r.status_code == 200
+    llegada = recibidas[-1]
+    assert llegada.url.host == "tracking.test" and llegada.url.path == ruta
+    assert llegada.headers["x-user-rol"] == "cliente" and llegada.headers["x-cliente-id"] == CLIENTE_A
+    assert "authorization" not in llegada.headers
+
+
+@pytest.mark.parametrize("rol", ["operador", "gestor_flota", "administrador"])
+@pytest.mark.parametrize("ruta", RUTAS_CLIENTE)
+def test_la_ruta_del_cliente_es_solo_del_cliente(gw, rol, ruta):
+    n = len(recibidas)
+    r = gw.get(f"/api/v1{ruta}", headers=auth(rol))
+    assert r.status_code == 403 and r.json()["detail"]["codigo"] == "SIN_PERMISO" and len(recibidas) == n
+
+
+def test_sin_token_el_seguimiento_del_cliente_es_401(gw):
+    assert gw.get(f"/api/v1/seguimiento/cliente/envio/{ENVIO}").status_code == 401
+
+
+@pytest.mark.parametrize("ruta", [
+    "/seguimiento/flota", f"/seguimiento/vehiculo/{ENVIO}", "/seguimiento/codigo/ENV-00000001", f"/seguimiento/envio/{ENVIO}",
+    f"/seguimiento/envio/{ENVIO}/trazado", f"/seguimiento/envio/{ENVIO}/recorrido",
+    "/telemetria", "/telemetria/ultima", "/simulaciones", f"/simulaciones/{ENVIO}",
+    # intentos de colarse por la ruta del cliente
+    "/seguimiento/cliente/flota", "/seguimiento/cliente/envio", "/seguimiento/cliente/envio/",
+    "/seguimiento/cliente/envio/no-es-uuid", f"/seguimiento/cliente/envio/{ENVIO}/otra", f"/seguimiento/cliente/envio/{ENVIO}/../../flota",
+    "/seguimiento/cliente/envio/../../flota", f"/seguimiento/cliente/envio/{ENVIO}/trazado/extra", "/seguimiento/cliente/envio/%2e%2e/flota",
+    f"/seguimiento//cliente/envio/{ENVIO}",
+])
+def test_el_cliente_sigue_sin_poder_ver_la_flota_vehiculos_ni_telemetria(gw, ruta):
+    n = len(recibidas)
+    r = gw.get("/api/v1" + ruta, headers=auth("cliente"))
+    assert r.status_code in (403, 404), f"{ruta} -> {r.status_code}"
+    assert len(recibidas) == n, "no debe llegar nada a Tracking"
+
+
+@pytest.mark.parametrize("metodo", ["POST", "PUT", "PATCH", "DELETE"])
+def test_el_seguimiento_del_cliente_es_solo_lectura(gw, metodo):
+    n = len(recibidas)
+    r = gw.request(metodo, f"/api/v1/seguimiento/cliente/envio/{ENVIO}", headers=auth("cliente"), json={})
+    assert r.status_code in (403, 405) and len(recibidas) == n
+
+
+def test_el_personal_conserva_el_seguimiento_de_siempre(gw):
+    for rol in ("operador", "gestor_flota", "administrador"):
+        for ruta in ("/seguimiento/flota", f"/seguimiento/envio/{ENVIO}", f"/seguimiento/vehiculo/{ENVIO}", "/telemetria", "/simulaciones"):
+            r = gw.get("/api/v1" + ruta, headers=auth(rol))
+            assert r.status_code == 200, f"{rol} {ruta} -> {r.status_code}"
+
+
+def test_una_ruta_con_salto_de_linea_final_no_coincide_con_ninguna_regla():
+    from app.permisos import buscar_regla
+    assert buscar_regla("GET", f"/seguimiento/cliente/envio/{ENVIO}") is not None
+    assert buscar_regla("GET", f"/seguimiento/cliente/envio/{ENVIO}\n") is None
+    assert buscar_regla("GET", "/envios\n") is None
+
+
+# ---------- ubicación base de los vehículos ----------
+
+VEH = "44444444-4444-4444-4444-444444444444"
+
+
+@pytest.mark.parametrize("rol", ["gestor_flota", "administrador"])
+def test_gestor_y_admin_fijan_la_ubicacion_de_un_vehiculo_por_el_gateway(gw, rol):
+    r = gw.put(f"/api/v1/vehiculos/{VEH}/ubicacion", json={"latitud": 4.7, "longitud": -74.0, "codigo_pais": "CO"}, headers=auth(rol))
+    assert r.status_code == 200
+    assert recibidas[-1].method == "PUT" and recibidas[-1].url.host == "fleet.test"
+    assert recibidas[-1].url.path == f"/vehiculos/{VEH}/ubicacion"
+
+
+@pytest.mark.parametrize("rol", ["cliente", "operador"])
+def test_cliente_y_operador_no_pueden_fijar_la_ubicacion_de_un_vehiculo(gw, rol):
+    n = len(recibidas)
+    r = gw.put(f"/api/v1/vehiculos/{VEH}/ubicacion", json={}, headers=auth(rol))
+    assert r.status_code == 403 and len(recibidas) == n
+
+
+def test_sin_token_no_se_fija_la_ubicacion(gw):
+    assert gw.put(f"/api/v1/vehiculos/{VEH}/ubicacion", json={}).status_code == 401
