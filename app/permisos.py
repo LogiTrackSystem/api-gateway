@@ -58,7 +58,7 @@ REGLAS = [
     _p("GET", r"/auth/me", TODOS),
     _p("GET,POST,PATCH", rf"/usuarios(/{ID})?", {A}),
     # --- Clientes y ubicaciones ---
-    _p("GET", rf"/clientes(/.*)?", {C, O, A}),
+    _p("GET", r"/clientes(/.*)?", {C, O, A}),
     _p("POST,PATCH", rf"/clientes(/{ID})?", {O, A}),
     _p("GET", r"/ubicaciones(/.*)?", TODOS),
     _p("POST,PATCH", r"/ubicaciones(/.*)?", {O, A}),

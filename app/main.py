@@ -1,3 +1,4 @@
+import os
 import asyncio
 import time
 import uuid
@@ -51,7 +52,7 @@ def health(request: Request):
     # "calentamiento" dice cuántos microservicios ya despertaron (útil para saber cuándo el sistema está listo)
     activo = getattr(request.app.state, "warmup", None) is not None
     estado = getattr(request.app.state, "warmup_estado", None)
-    return {"status": "ok", "service": "api-gateway", "calentamiento": calentamiento.resumen(estado, activo)}
+    return {"status": "ok", "service": "api-gateway", "version": os.getenv("APP_VERSION", "dev"), "calentamiento": calentamiento.resumen(estado, activo)}
 
 
 @app.get("/openapi.json", include_in_schema=False)
