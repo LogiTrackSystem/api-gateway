@@ -12,6 +12,13 @@ hasta que responde. Así nadie tiene que ir abriendo los servicios uno por uno.
 - Las URLs salen de config.SERVICIOS (las variables *_SERVICE_URL), sin duplicar listas.
 - Nunca levanta excepciones hacia afuera: lo que no responde solo queda registrado en el log.
 - Su progreso se puede consultar en el /health del gateway (campo "calentamiento").
+
+Comprobación periódica (WARMUP_INTERVALO_MIN > 0, 5 minutos por defecto): después del calentamiento inicial cada
+servicio tiene SU PROPIA tarea que le hace GET /health cada N minutos. Son independientes: un servicio caído solo
+detiene a su propia tarea, nunca a las demás, y sus reintentos están acotados (WARMUP_INTENTOS_PERIODICOS).
+Las comprobaciones se reparten en el tiempo (cada servicio con su desfase) para no hacer 9 peticiones a la vez.
+El /health de cada microservicio es estático (no toca base de datos ni RabbitMQ): no tiene efectos secundarios.
+OJO: comprobar la salud NO garantiza que Render mantenga despierto un servicio gratis (ver README).
 """
 from __future__ import annotations
 
@@ -79,9 +86,11 @@ async def calentar_servicio(
     intentos: int,
     pausa_s: float,
     estado: dict[str, str] | None = None,
+    periodico: bool = False,
 ) -> ResultadoCalentamiento:
     """Hace GET a `url` con `pausa_s` segundos entre intentos. `intentos` = 0 significa sin límite:
-    se repite hasta que el servicio responda (o hasta que la tarea se cancele)."""
+    se repite hasta que el servicio responda (o hasta que la tarea se cancele).
+    `periodico=True` (comprobaciones de rutina): los mensajes de éxito y de cada intento pasan a DEBUG para no llenar el log."""
     inicio = time.perf_counter()
     limite = f"/{intentos}" if intentos else ""
     detalle = "sin intentos"
@@ -91,7 +100,8 @@ async def calentar_servicio(
     while not intentos or n < intentos:
         n += 1
         if _hablar(n):
-            log.info("Enviando ping de calentamiento a %s (intento %d%s): %s", servicio, n, limite, url)
+            log.log(logging.DEBUG if periodico else logging.INFO,
+                    "Enviando ping de calentamiento a %s (intento %d%s): %s", servicio, n, limite, url)
         try:
             resp = await cliente.get(url)
         except Exception as exc:  # RequestError, timeouts, DNS/TLS... (CancelledError no entra aquí)
@@ -102,7 +112,8 @@ async def calentar_servicio(
             ms = round((time.perf_counter() - inicio) * 1000)
             detalle = f"HTTP {resp.status_code}"
             if resp.status_code == 200 and _es_json(resp):
-                log.log(NIVEL_SUCCESS, "Servicio %s activo (%d ms, intento %d%s)", servicio, ms, n, limite)
+                log.log(logging.DEBUG if periodico else NIVEL_SUCCESS,
+                        "Servicio %s activo (%d ms, intento %d%s)", servicio, ms, n, limite)
                 if estado is not None:
                     estado[servicio] = ACTIVO
                 return ResultadoCalentamiento(servicio, True, n, ms, detalle)
@@ -144,14 +155,68 @@ def resumen(estado: dict[str, str] | None, activado: bool = True) -> dict:
     return {"estado": situacion, "activos": activos, "total": total}
 
 
+HORA_S = 3600.0
+# Con comprobación periódica, "reintentar sin límite" al arrancar convertiría a un servicio caído de verdad en una
+# petición cada pausa_s para siempre. Se acota: pasados estos intentos el servicio pasa al ritmo normal (cada N min).
+INTENTOS_ARRANQUE_PERIODICO = 24
+
+
+async def _vigilar_servicio(
+    cliente: httpx.AsyncClient,
+    nombre: str,
+    url: str,
+    config: ConfigCalentamiento,
+    estado: dict[str, str] | None,
+    desfase_s: float,
+    progreso: dict,
+) -> ResultadoCalentamiento:
+    """Calentamiento inicial de UN servicio y, si hay intervalo, su comprobación periódica. Cada servicio corre en
+    su propia corrutina: lo que le pase a uno no afecta a los demás. Con intervalo no termina hasta que se cancele."""
+    intentos = config.intentos
+    if config.intervalo_min > 0 and intentos == 0:
+        intentos = INTENTOS_ARRANQUE_PERIODICO
+    resultado = await calentar_servicio(cliente, nombre, url, intentos=intentos, pausa_s=config.pausa_s, estado=estado)
+    progreso["pendientes"] -= 1
+    progreso["activos"] += int(resultado.activo)
+    if progreso["pendientes"] == 0:   # el último servicio en terminar el calentamiento inicial cierra el resumen
+        nivel = NIVEL_SUCCESS if progreso["activos"] == progreso["total"] else logging.WARNING
+        log.log(nivel, "Calentamiento terminado: %d/%d servicio(s) activos", progreso["activos"], progreso["total"])
+    if config.intervalo_min <= 0:
+        return resultado
+    espera_s = config.intervalo_min * 60.0
+    activo = resultado.activo
+    comprobaciones = fallos = 0
+    ultimo_informe = time.monotonic()
+    await asyncio.sleep(espera_s + desfase_s)   # el desfase reparte las 9 comprobaciones dentro del intervalo
+    while True:
+        r = await calentar_servicio(
+            cliente, nombre, url, intentos=max(1, config.intentos_periodicos), pausa_s=config.pausa_s, periodico=True)
+        comprobaciones += 1
+        fallos += 0 if r.activo else 1
+        if estado is not None:
+            estado[nombre] = ACTIVO if r.activo else DESCARTADO
+        if r.activo and not activo:
+            log.log(NIVEL_SUCCESS, "Servicio %s volvió a responder (%d ms)", nombre, r.ms)
+        elif not r.activo and activo:
+            log.warning("Servicio %s dejó de responder: %s", nombre, r.detalle)
+        activo = r.activo
+        if time.monotonic() - ultimo_informe >= HORA_S:
+            # Un resumen por servicio y hora: prueba de que las comprobaciones corren, sin llenar el log
+            log.info("Health check periódico de %s: %d comprobación(es) y %d fallo(s) en la última hora (ahora: %s)",
+                     nombre, comprobaciones, fallos, "activo" if activo else r.detalle)
+            comprobaciones = fallos = 0
+            ultimo_informe = time.monotonic()
+        await asyncio.sleep(espera_s)
+
+
 async def ejecutar(
     config: ConfigCalentamiento | None = None,
     servicios: dict[str, str | None] | None = None,
     cliente: httpx.AsyncClient | None = None,
     estado: dict[str, str] | None = None,
 ) -> list[ResultadoCalentamiento]:
-    """Calienta todos los servicios en paralelo. Con WARMUP_INTERVALO_MIN > 0 repite cada N minutos
-    (solo mientras el gateway esté despierto); en otro caso termina cuando todos respondieron."""
+    """Calienta todos los servicios en paralelo. Con WARMUP_INTERVALO_MIN > 0 cada servicio sigue comprobándose
+    cada N minutos (no regresa hasta que se cancele la tarea); en otro caso termina cuando todos respondieron."""
     _preparar_logging()
     config = config or config_calentamiento()
     urls = urls_de_salud(SERVICIOS if servicios is None else servicios, config.solo)
@@ -167,23 +232,31 @@ async def ejecutar(
             follow_redirects=True,
         )
     try:
-        while True:
-            log.info(
-                "Iniciando calentamiento de %d microservicio(s): %s (%s)", len(urls), ", ".join(urls),
-                f"hasta {config.intentos} intentos cada uno" if config.intentos else "reintentando hasta que respondan",
-            )
-            if estado is not None:
-                estado.update({nombre: CALENTANDO for nombre in urls})
-            resultados = list(await asyncio.gather(*[
-                calentar_servicio(cliente, nombre, url, intentos=config.intentos, pausa_s=config.pausa_s, estado=estado)
-                for nombre, url in urls.items()
-            ]))
-            activos = sum(r.activo for r in resultados)
-            nivel = NIVEL_SUCCESS if activos == len(resultados) else logging.WARNING
-            log.log(nivel, "Calentamiento terminado: %d/%d servicio(s) activos", activos, len(resultados))
-            if config.intervalo_min <= 0:
-                return resultados
-            await asyncio.sleep(config.intervalo_min * 60)
+        periodico = config.intervalo_min > 0
+        if periodico and config.intervalo_min >= 15:
+            log.warning("WARMUP_INTERVALO_MIN=%s: Render gratis duerme tras ~15 min sin tráfico; con este intervalo "
+                        "los servicios pueden dormirse entre comprobaciones", config.intervalo_min)
+        log.info(
+            "Iniciando calentamiento de %d microservicio(s): %s (%s)%s", len(urls), ", ".join(urls),
+            f"hasta {config.intentos} intentos cada uno" if config.intentos else "reintentando hasta que respondan",
+            f"; después, comprobación cada {config.intervalo_min:g} min" if periodico else "",
+        )
+        if estado is not None:
+            estado.update({nombre: CALENTANDO for nombre in urls})
+        separacion = config.intervalo_min * 60.0 / len(urls) if periodico else 0.0
+        progreso = {"pendientes": len(urls), "activos": 0, "total": len(urls)}
+        tareas = [
+            asyncio.ensure_future(_vigilar_servicio(cliente, nombre, url, config, estado, i * separacion, progreso))
+            for i, (nombre, url) in enumerate(urls.items())
+        ]
+        try:
+            resultados = list(await asyncio.gather(*tareas))
+        except BaseException:
+            for t in tareas:   # al cancelar (apagado del gateway) no queda ninguna comprobación suelta
+                t.cancel()
+            await asyncio.gather(*tareas, return_exceptions=True)
+            raise
+        return resultados
     finally:
         if propio:
             await cliente.aclose()
@@ -200,6 +273,9 @@ async def _sin_excepciones(corrutina) -> list[ResultadoCalentamiento]:
         return []
 
 
+_TAREA: asyncio.Task | None = None   # la única tarea de comprobación de este proceso
+
+
 def iniciar(
     config: ConfigCalentamiento | None = None,
     servicios: dict[str, str | None] | None = None,
@@ -214,9 +290,14 @@ def iniciar(
         _preparar_logging()
         log.info("Calentamiento de microservicios desactivado (WARMUP_ACTIVO)")
         return None
-    return asyncio.create_task(
+    global _TAREA
+    if _TAREA is not None and not _TAREA.done() and _TAREA.get_loop() is asyncio.get_running_loop():
+        log.warning("La comprobación de microservicios ya está en marcha en este proceso; no se inicia otra")
+        return _TAREA
+    _TAREA = asyncio.create_task(
         _sin_excepciones(ejecutar(config, servicios, cliente, estado)), name="warmup-microservicios"
     )
+    return _TAREA
 
 
 async def detener(tarea: asyncio.Task | None) -> None:

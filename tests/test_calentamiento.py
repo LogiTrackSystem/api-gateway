@@ -71,10 +71,12 @@ def test_urls_de_salud_puede_filtrar_por_nombre():
 
 
 def test_configuracion_por_defecto(monkeypatch):
-    for v in ("WARMUP_ACTIVO", "WARMUP_INTENTOS", "WARMUP_PAUSA_S", "WARMUP_TIMEOUT_S", "WARMUP_INTERVALO_MIN", "WARMUP_SERVICIOS"):
+    for v in ("WARMUP_ACTIVO", "WARMUP_INTENTOS", "WARMUP_PAUSA_S", "WARMUP_TIMEOUT_S", "WARMUP_INTERVALO_MIN",
+              "WARMUP_SERVICIOS", "WARMUP_INTENTOS_PERIODICOS"):
         monkeypatch.delenv(v, raising=False)
     c = config_calentamiento()
-    assert (c.activo, c.intentos, c.pausa_s, c.timeout_s, c.intervalo_min, c.solo) == (True, 0, 5.0, 30.0, 0.0, frozenset())
+    assert (c.activo, c.intentos, c.pausa_s, c.timeout_s, c.intervalo_min, c.solo) == (True, 0, 5.0, 30.0, 5.0, frozenset())
+    assert c.intentos_periodicos == 2   # comprobación cada 5 minutos por defecto
 
 
 def test_configuracion_lee_el_entorno_y_tolera_valores_invalidos(monkeypatch):
@@ -387,3 +389,252 @@ def test_health_indica_calentamiento_desactivado_por_defecto():
 
     with TestClient(app) as cliente:  # conftest fija WARMUP_ACTIVO=false
         assert cliente.get("/health").json()["calentamiento"] == {"estado": "desactivado"}
+
+
+# ---------- comprobación periódica (cada N minutos, un servicio no afecta a otro) ----------
+# En estas pruebas el "intervalo" es de décimas de segundo: 0.002 min = 0,12 s.
+INTERVALO_RAPIDO = 0.002
+
+
+async def _periodico(manejador, servicios, segundos, **cambios):
+    """Corre la comprobación `segundos` y la cancela como haría el apagado del gateway."""
+    parametros = {"intervalo_min": INTERVALO_RAPIDO, **cambios}
+    cfg = _config(**parametros)
+    async with _cliente(manejador) as c:
+        tarea = calentamiento.iniciar(cfg, servicios, c)
+        await asyncio.sleep(segundos)
+        await calentamiento.detener(tarea)
+        return tarea
+
+
+def _contador():
+    visto = {}
+
+    def contar(req: httpx.Request) -> None:
+        visto.setdefault(req.url.host, []).append(time.perf_counter())
+
+    return visto, contar
+
+
+def test_el_intervalo_por_defecto_es_de_cinco_minutos_y_se_puede_pasar_a_diez(monkeypatch):
+    monkeypatch.delenv("WARMUP_INTERVALO_MIN", raising=False)
+    assert config_calentamiento().intervalo_min == 5.0     # 300 s
+    monkeypatch.setenv("WARMUP_INTERVALO_MIN", "10")
+    assert config_calentamiento().intervalo_min == 10.0    # 600 s
+    monkeypatch.setenv("WARMUP_INTERVALO_MIN", "0")
+    assert config_calentamiento().intervalo_min == 0.0     # solo al arrancar (apaga lo periódico)
+
+
+def test_cada_servicio_se_vuelve_a_comprobar_en_cada_intervalo():
+    visto, contar = _contador()
+
+    def manejador(req):
+        contar(req)
+        return _ok()
+
+    servicios = {f"s{i}": f"http://s{i}.test" for i in range(3)}
+    _correr(_periodico(manejador, servicios, 0.75))
+    for host, momentos in visto.items():
+        assert len(momentos) >= 4, (host, len(momentos))   # 1 de calentamiento + varias periódicas
+
+
+def test_las_comprobaciones_solo_hacen_get_a_health_con_la_clave_interna(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "clave-123")
+    vistas = []
+
+    def manejador(req):
+        vistas.append((req.method, req.url.path, req.headers.get("x-internal-key"), len(req.content)))
+        return _ok()
+
+    async def prueba():
+        cfg = _config(intervalo_min=INTERVALO_RAPIDO)
+        async with _cliente(manejador, headers=cabeceras_internas()) as c:
+            tarea = calentamiento.iniciar(cfg, {"fleet": "http://f.test"}, c)
+            await asyncio.sleep(0.4)
+            await calentamiento.detener(tarea)
+
+    _correr(prueba())
+    assert len(vistas) >= 3
+    assert set(vistas) == {("GET", "/health", "clave-123", 0)}   # ninguna escritura ni ruta de negocio
+
+
+def test_un_servicio_caido_no_detiene_las_comprobaciones_de_los_demas():
+    visto, contar = _contador()
+
+    def manejador(req):
+        contar(req)
+        if req.url.host == "malo.test":
+            raise httpx.ConnectError("caído")
+        return _ok()
+
+    servicios = {"malo": "http://malo.test", "bueno": "http://bueno.test"}
+    _correr(_periodico(manejador, servicios, 0.8, intentos=2))
+    assert len(visto["bueno.test"]) >= 4      # el bueno sigue comprobándose cada intervalo
+    assert len(visto["malo.test"]) >= 4       # y el malo se sigue intentando sin colgar a nadie
+
+
+def test_un_servicio_que_nunca_responde_no_provoca_reintentos_agresivos():
+    visto, contar = _contador()
+
+    def manejador(req):
+        contar(req)
+        raise httpx.ConnectError("caído")
+
+    # intentos=0 ("sin límite") solo vale para arrancar; luego cada comprobación hace como máximo 2 intentos
+    _correr(_periodico(manejador, {"malo": "http://malo.test"}, 0.7, intentos=0, pausa_s=0.0))
+    momentos = visto["malo.test"]
+    arranque = calentamiento.INTENTOS_ARRANQUE_PERIODICO
+    assert len(momentos) >= arranque + 2                       # superó el arranque y entró al ritmo normal
+    por_ciclo = [b - a for a, b in zip(momentos[arranque:], momentos[arranque + 1:])]
+    assert por_ciclo and max(por_ciclo) > 0.05                 # hay pausas del intervalo: no es un bucle apretado
+    assert len(momentos) < arranque + 2 * 8                    # ~2 por ciclo y pocos ciclos en 0,7 s
+
+
+def test_el_arranque_periodico_acota_los_reintentos_sin_limite(monkeypatch):
+    monkeypatch.setattr(importlib.import_module("app.calentamiento"), "INTENTOS_ARRANQUE_PERIODICO", 3)
+    visto, contar = _contador()
+
+    def manejador(req):
+        contar(req)
+        raise httpx.ConnectError("caído")
+
+    async def prueba():
+        cfg = _config(intervalo_min=10.0, intentos=0, pausa_s=0.0)   # intervalo largo: solo vemos el arranque
+        async with _cliente(manejador) as c:
+            tarea = calentamiento.iniciar(cfg, {"malo": "http://malo.test"}, c)
+            await asyncio.sleep(0.3)
+            await calentamiento.detener(tarea)
+
+    _correr(prueba())
+    assert len(visto["malo.test"]) == 3      # 3 intentos de arranque y luego espera el intervalo
+
+
+def test_las_comprobaciones_se_reparten_en_el_tiempo():
+    visto, contar = _contador()
+
+    def manejador(req):
+        contar(req)
+        return _ok()
+
+    servicios = {f"s{i}": f"http://s{i}.test" for i in range(4)}
+    _correr(_periodico(manejador, servicios, 0.5, intervalo_min=0.004))   # intervalo 0,24 s
+    segundas = sorted(m[1] for m in visto.values())            # la 1.ª comprobación periódica de cada servicio
+    assert segundas[-1] - segundas[0] > 0.1                    # con desfase: no caen las 4 a la vez
+
+
+def test_el_estado_refleja_si_el_servicio_dejo_de_responder_y_si_volvio(caplog):
+    llamadas = {"n": 0}
+
+    def manejador(req):
+        llamadas["n"] += 1
+        if 3 <= llamadas["n"] <= 6:       # cae unos ciclos y se recupera
+            raise httpx.ReadTimeout("dormido")
+        return _ok()
+
+    estado = {}
+
+    async def prueba():
+        cfg = _config(intervalo_min=INTERVALO_RAPIDO, intentos_periodicos=1)
+        async with _cliente(manejador) as c:
+            tarea = calentamiento.iniciar(cfg, {"fleet": "http://f.test"}, c, estado)
+            vistos = set()
+            for _ in range(40):
+                await asyncio.sleep(0.03)
+                vistos.add(estado.get("fleet"))
+            await calentamiento.detener(tarea)
+            return vistos
+
+    with caplog.at_level(logging.INFO, logger="logitrack.warmup"):
+        vistos = _correr(prueba())
+    assert {"activo", "descartado"} <= vistos
+    assert "dejó de responder" in caplog.text and "volvió a responder" in caplog.text
+
+
+def test_una_respuesta_de_error_cuenta_como_fallo_y_no_rompe_el_ciclo():
+    respuestas = iter([200, 500, 500, 200] + [200] * 50)
+
+    def manejador(req):
+        codigo = next(respuestas)
+        return httpx.Response(codigo, json={"status": "ok"})
+
+    visto = []
+
+    def con_conteo(req):
+        visto.append(1)
+        return manejador(req)
+
+    _correr(_periodico(con_conteo, {"fleet": "http://f.test"}, 0.6, intentos_periodicos=1))
+    assert len(visto) >= 4      # siguió comprobando después de los 500
+
+
+def test_los_logs_de_rutina_no_inundan_la_consola(caplog):
+    def manejador(req):
+        return _ok()
+
+    with caplog.at_level(logging.INFO, logger="logitrack.warmup"):
+        _correr(_periodico(manejador, {"fleet": "http://f.test"}, 0.7))
+    # el calentamiento inicial se anuncia, pero las decenas de comprobaciones periódicas no generan una línea cada una
+    assert caplog.text.count("Enviando ping de calentamiento") == 1
+    assert caplog.text.count("Servicio fleet activo") == 1
+
+
+def test_no_se_inicia_una_segunda_tarea_en_el_mismo_proceso():
+    async def prueba():
+        def manejador(req):
+            return _ok()
+
+        async with _cliente(manejador) as c:
+            cfg = _config(intervalo_min=10.0)
+            a = calentamiento.iniciar(cfg, {"fleet": "http://f.test"}, c)
+            b = calentamiento.iniciar(cfg, {"fleet": "http://f.test"}, c)
+            await asyncio.sleep(0.05)   # que la tarea arranque antes de contarla y cancelarla
+            tareas = [t for t in asyncio.all_tasks() if t.get_name() == "warmup-microservicios"]
+            await calentamiento.detener(a)
+            return a is b, len(tareas)
+
+    mismas, cuantas = _correr(prueba())
+    assert mismas and cuantas == 1
+
+
+def test_al_apagar_no_quedan_tareas_ni_conexiones_abiertas(monkeypatch):
+    cerrados = []
+    original = httpx.AsyncClient
+
+    def falso(*args, **kwargs):
+        cliente = original(transport=httpx.MockTransport(lambda r: _ok()), **kwargs)
+        cierre = cliente.aclose
+
+        async def aclose():
+            cerrados.append(1)
+            await cierre()
+
+        cliente.aclose = aclose
+        return cliente
+
+    monkeypatch.setattr(calentamiento.httpx, "AsyncClient", falso)
+
+    async def prueba():
+        tarea = calentamiento.iniciar(_config(intervalo_min=INTERVALO_RAPIDO),
+                                      {"a": "http://a.test", "b": "http://b.test"})
+        await asyncio.sleep(0.4)
+        await calentamiento.detener(tarea)
+        pendientes = [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+        return tarea.done(), pendientes
+
+    hecha, pendientes = _correr(prueba())
+    assert hecha and pendientes == [] and cerrados == [1]     # el cliente propio se cerró una vez
+
+
+def test_el_gateway_con_comprobacion_periodica_arranca_responde_y_apaga_limpio(monkeypatch):
+    monkeypatch.setattr("app.calentamiento.SERVICIOS", {"fleet": "http://127.0.0.1:9"})
+    monkeypatch.setenv("WARMUP_ACTIVO", "true")
+    monkeypatch.setenv("WARMUP_INTERVALO_MIN", "5")
+    monkeypatch.setenv("WARMUP_PAUSA_S", "10")
+    from app.main import app
+
+    inicio = time.perf_counter()
+    with TestClient(app) as cliente:
+        assert cliente.get("/health").json()["status"] == "ok"
+        assert isinstance(app.state.warmup, asyncio.Task)
+    assert time.perf_counter() - inicio < 5
+    assert app.state.warmup.done()
