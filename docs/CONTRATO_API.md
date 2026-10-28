@@ -821,6 +821,13 @@ Registra un vehículo. La placa debe ser única.
 | `capacidad_tanque_l` | decimal | no | > 0; puede ser `null` |
 | `consumo_km_por_litro` | decimal | no | > 0; puede ser `null` |
 | `tipo_combustible` | texto | no | puede ser `null` |
+| `ubicacion_id` | uuid | **sí** | `id` de la ubicación elegida en la lista `GET /api/v1/ubicaciones` |
+| `ubicacion_nombre` | texto | **sí** | `nombre` de esa ubicación |
+| `latitud` | decimal | **sí** | `latitud` de esa ubicación (−90 a 90); no se escribe a mano |
+| `longitud` | decimal | **sí** | `longitud` de esa ubicación (−180 a 180); no se escribe a mano |
+| `codigo_pais` | texto | **sí** | `codigo_pais` de esa ubicación (2 letras) |
+
+La ubicación es la base donde está el vehículo: queda registrada como ubicación confiable (`ubicacion_fuente = "registro_gestor"`), el vehículo aparece en el mapa y se puede asignar por cercanía desde el primer momento. Para un vehículo creado antes sin ubicación, se fija con `PUT /api/v1/vehiculos/{id}/ubicacion` enviando los mismos campos (`ubicacion_id`, `nombre`, `latitud`, `longitud`, `codigo_pais`).
 
 Ejemplo:
 
@@ -837,7 +844,12 @@ Ejemplo:
   "certificado_hazmat": false,
   "capacidad_tanque_l": 100.0,
   "consumo_km_por_litro": 4.5,
-  "tipo_combustible": "diesel"
+  "tipo_combustible": "diesel",
+  "ubicacion_id": "9322538e-829d-41a0-a45c-b8def0665556",
+  "ubicacion_nombre": "Bogotá",
+  "latitud": 4.711,
+  "longitud": -74.0721,
+  "codigo_pais": "CO"
 }
 ```
 
@@ -847,6 +859,7 @@ Ejemplo:
 
 | HTTP | `detail` | Cuándo |
 |---|---|---|
+| 422 | detalle de validación | Falta alguno de los campos de ubicación o es inválido (latitud/longitud fuera de rango, `codigo_pais` que no tiene 2 letras) |
 | 409 | texto | Ya existe un vehículo con esa placa |
 | 422 | lista | Datos con formato inválido (ver sección 2) |
 

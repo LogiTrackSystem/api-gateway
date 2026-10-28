@@ -122,7 +122,7 @@ def _r(prefijo: str, servicio: str, metodos: str, destino: str | None = None) ->
 RUTAS = [
     _r("auth", "shipment", "GET,POST"),
     _r("usuarios", "shipment", "GET,POST,PATCH"),
-    _r("vehiculos", "fleet", "GET,POST,PATCH"),
+    _r("vehiculos", "fleet", "GET,POST,PATCH,PUT"),   # PUT: fijar la ubicación base (PUT /vehiculos/{id}/ubicacion)
     _r("conductores", "fleet", "GET,POST,PATCH,PUT"),
     _r("viabilidad", "fleet", "POST", destino="/reservas/viabilidad"),  # antes que "reservas": es más específica
     _r("reservas", "fleet", "GET"),
