@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import httpx
 from .interno import cabeceras_internas
 from fastapi import FastAPI, Request
+from prometheus_fastapi_instrumentator import Instrumentator
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
@@ -45,6 +46,10 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID", "X-Gateway-Servicio"],
 )
+
+
+# Métricas para Prometheus (GET /metrics): peticiones por método/estado y tiempos de respuesta
+Instrumentator(excluded_handlers=["/metrics"]).instrument(app).expose(app, include_in_schema=False)
 
 
 @app.get("/health", include_in_schema=False)
