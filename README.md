@@ -63,3 +63,71 @@ Cada respuesta pesa unos 50 bytes de cuerpo más cabeceras: del orden de pocos M
   o un monitor externo); esa decisión no está implementada.
 - Si el workspace se suspende (horas o ancho de banda agotados), ningún servicio corre y hay que recuperar el
   workspace en Render (esperar el cambio de mes o pasar a un plan de pago) antes de que el gateway pueda comprobar nada.
+
+---
+
+<!-- entrega-final -->
+
+## Descripción
+
+Punto de entrada único (`/api/v1`): verifica el JWT, aplica los permisos por rol, reenvía la petición al microservicio correcto, maneja CORS y publica la documentación OpenAPI unificada.
+
+- **Puerto local:** 8002   ·   **Despliegue activo:** <https://logitrack-gateway.onrender.com> (`/health` y `/metrics` públicos)
+- **Imagen Docker:** `<usuario-dockerhub>/logitrack-gateway`   ·   **Repositorio de CI/CD:** `LogiTrackSystem/pipelines`
+
+## Variables de entorno
+
+Copia `.env.example` como `.env` y completa los valores. El `.env` **no se sube** al repositorio.
+
+| Variable | Para qué sirve |
+|---|---|
+| `JWT_SECRET` | Secreto para firmar y verificar los tokens (mínimo 16 caracteres; el mismo valor en Shipment y en el gateway). Es un secreto. |
+| `FLEET_SERVICE_URL` | URL base de Fleet Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `SHIPMENT_SERVICE_URL` | URL base de Shipment Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `ROUTING_SERVICE_URL` | URL base de Routing Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `TRACKING_SERVICE_URL` | URL base de Tracking Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `MAINTENANCE_SERVICE_URL` | URL base de Maintenance Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `CUSTOMS_SERVICE_URL` | URL base de Customs Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `NOTIFICATION_SERVICE_URL` | URL base de Notification Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `BILLING_SERVICE_URL` | URL base de Billing Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `ANALYTICS_SERVICE_URL` | URL base de Analytics Service, sin barra final (en local `http://localhost:<puerto>`). |
+| `CORS_ORIGINS` | Orígenes permitidos del navegador (URL del frontend), separados por coma. |
+| `GATEWAY_TIMEOUT_S` | Tiempo máximo de espera (s) por la respuesta de un servicio (por defecto 65). |
+| `INTERNAL_API_KEY` | Clave compartida entre el gateway y los servicios: exige la cabecera `X-Internal-Key` en todas las rutas salvo `/health` y `/metrics`. Vacía = sin restricción (solo local). Es un secreto. |
+
+## Documentación de la API
+
+Swagger unificado de todo el sistema: <https://logitrack-gateway.onrender.com/docs> (local: <http://localhost:8002/docs>). El contrato completo está en `docs/CONTRATO_API.md`.
+
+## Base de datos
+
+Este servicio no usa base de datos propia.
+
+## Pruebas
+
+Con el entorno virtual activo y `pip install -r requirements-dev.txt`:
+
+```
+pytest tests/unit                    # 2 pruebas unitarias
+pytest tests/integration             # 1 prueba de integración
+pytest --cov=app --cov-report=term   # toda la suite con cobertura
+```
+
+| Prueba | Qué verifica |
+|---|---|
+| Unitaria 1 | `jwt_simple.verificar_token` |
+| Unitaria 2 | `permisos.autorizar` |
+| Integración | petición HTTP sin token (401) y con token (reenvío con la identidad al servicio) |
+
+Archivos: `tests/unit/` y `tests/integration/` (test_verificar_token.py, test_autorizar.py, test_flujo_gateway.py). Cobertura de `app/` medida: **≈ 88 %**; en cada push y Pull Request GitHub Actions la recalcula y guarda `coverage.xml` como artefacto (`cobertura-gateway`).
+
+## Métricas y monitoreo
+
+Expone `GET /metrics` (formato Prometheus: `http_requests_total` y `http_request_duration_*`). Prometheus y el dashboard de Grafana están en el repositorio `logitrack-monitoring`.
+
+## CI/CD
+
+- `.github/workflows/pr.yml`: en cada push (rama distinta de `main`) y en cada Pull Request a `main` ejecuta el CI reutilizable (lint, pruebas con cobertura, `docker build` y prueba de arranque).
+- `.github/workflows/deploy.yml`: al fusionar en `main`, y solo con las pruebas en verde, publica la imagen en Docker Hub y despliega en Render (con verificación de `/health` y rollback manual).
+- Detalle y estrategia de ramas: `CICD.md` en el repositorio `LogiTrackSystem/pipelines`.
+
