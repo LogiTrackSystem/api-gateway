@@ -5,3 +5,5 @@ __pycache__/
 .env.docker
 .pytest_cache/
 *.log
+.coverage
+coverage.xml
